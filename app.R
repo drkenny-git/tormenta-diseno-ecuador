@@ -23,6 +23,16 @@ ui <- page_sidebar(
 
   useShinyjs(),
 
+  # CSS para el contorno de clusters (diferente color al de las zonas)
+  tags$style(HTML("
+    .leaflet-cluster-hull {
+      stroke: #e6550d !important;
+      fill: #fdae6b !important;
+      fill-opacity: 0.12 !important;
+      stroke-width: 1.5px !important;
+    }
+  ")),
+
   # ── Sidebar ──────────────────────────────────────────────────────────────
   sidebar = sidebar(
     width = 320,
@@ -113,7 +123,22 @@ ui <- page_sidebar(
         # Opciones Huff
         conditionalPanel(
           "input.metodo == 'huff'",
-          selectInput("huff_cuartil", "Cuartil:", choices = HUFF_CUARTILES),
+          conditionalPanel(
+            "!input.modo_experto",
+            div(class = "text-muted small mb-2",
+              "El cuartil se asigna según la duración de la tormenta:",
+              tags$ul(class = "mb-1 ps-3",
+                tags$li("Q1: t < 6 h"),
+                tags$li("Q2: 6 h ≤ t < 12 h"),
+                tags$li("Q3: 12 h ≤ t < 24 h"),
+                tags$li("Q4: t ≥ 24 h")
+              )
+            )
+          ),
+          selectInput("huff_cuartil", "Cuartil:",
+                      choices  = HUFF_CUARTILES,
+                      selected = huff_cuartil_para_duracion(6)),
+          uiOutput("huff_cuartil_aviso"),
           selectInput("huff_prob", "Probabilidad:", choices = HUFF_PROB, selected = 50)
         ),
 
@@ -216,15 +241,41 @@ server <- function(input, output, session) {
 
     mapa_base |>
       addCircleMarkers(
-        data        = ESTACIONES_SF,
-        layerId     = ~CODIGO,
-        radius      = 5,
-        color       = "#d7191c",
-        fillColor   = "#d7191c",
-        fillOpacity = 0.8,
-        stroke      = FALSE,
-        label       = ~paste0(CODIGO, " — ", ESTACION),
+        data           = sf::st_transform(ESTACIONES_SF, 4326),
+        layerId        = ~CODIGO,
+        radius         = 5,
+        color          = "#d7191c",
+        fillColor      = "#d7191c",
+        fillOpacity    = 0.8,
+        stroke         = FALSE,
+        label          = ~paste0(CODIGO, " — ", ESTACION),
+        options        = markerOptions(zIndexOffset = 1000),
         clusterOptions = markerClusterOptions()
+      ) |>
+      addControl(
+        html = HTML(paste0(
+          '<div style="background:white;padding:8px 10px;border-radius:6px;',
+          'font-size:12px;line-height:1.6;box-shadow:0 1px 4px rgba(0,0,0,.25)">',
+          '<b>Referencias</b><br>',
+          '<span style="display:inline-block;width:14px;height:14px;',
+          'background:#2c7bb6;opacity:.4;border:1px solid #2c7bb6;',
+          'vertical-align:middle;margin-right:5px"></span>Zona de intensidad INAMHI<br>',
+          '<span style="display:inline-block;width:14px;height:14px;',
+          'background:#fdae61;opacity:.7;border:1.5px solid #f46d43;',
+          'vertical-align:middle;margin-right:5px"></span>Zona seleccionada<br>',
+          '<span style="display:inline-block;width:12px;height:12px;border-radius:50%;',
+          'background:#d7191c;vertical-align:middle;margin-right:5px"></span>',
+          'Estación pluviométrica<br>',
+          '<span style="display:inline-block;width:20px;height:14px;',
+          'background:#fdae6b;border:1.5px solid #e6550d;border-radius:3px;',
+          'opacity:.7;vertical-align:middle;margin-right:5px"></span>',
+          'Contorno de grupo de estaciones<br>',
+          '<span style="font-size:11px;color:#666">',
+          'El número en cada círculo indica la cantidad de estaciones.',
+          ' Clic para expandir.</span>',
+          '</div>'
+        )),
+        position = "bottomleft"
       )
   })
 
@@ -298,6 +349,29 @@ server <- function(input, output, session) {
     }
   })
 
+  # ── Huff: cuartil recomendado según duración --------------------------------
+  cuartil_recomendado <- reactive({
+    req(input$duracion_horas)
+    huff_cuartil_para_duracion(input$duracion_horas)
+  })
+
+  observeEvent(input$duracion_horas, {
+    updateSelectInput(session, "huff_cuartil",
+                      selected = huff_cuartil_para_duracion(input$duracion_horas))
+  }, ignoreInit = TRUE)
+
+  output$huff_cuartil_aviso <- renderUI({
+    req(input$metodo == "huff", input$huff_cuartil, input$duracion_horas)
+    sel <- as.integer(input$huff_cuartil)
+    rec <- cuartil_recomendado()
+    if (sel != rec) {
+      div(class = "alert alert-warning py-1 small mt-1",
+          icon("triangle-exclamation"),
+          sprintf(" Para %.0f h se recomienda Q%d. Estás usando Q%d.",
+                  input$duracion_horas, rec, sel))
+    }
+  })
+
   # ── Ayuda de método (modo guiado) ----------------------------------------
   output$ayuda_metodo <- renderUI({
     textos <- list(
@@ -348,26 +422,26 @@ server <- function(input, output, session) {
       # Paso 1: Idtr ponderado
       incProgress(0.2, detail = "Ponderando estaciones")
       idtr_pond <- tryCatch({
-        if (length(codigos_sel) == 1) {
-          obtener_idtr(IDTR, codigos_sel, TR_sel)
+        if (length(codigos_sel) > 1 && input$ponderacion == "idw") {
+          dists <- calcular_distancias_punto(
+            crear_punto(
+              mean(IDTR$X[IDTR$CODIGO %in% codigos_sel]),
+              mean(IDTR$Y[IDTR$CODIGO %in% codigos_sel])
+            ),
+            ESTACIONES_SF[ESTACIONES_SF$CODIGO %in% codigos_sel, ]
+          )
+          calcular_idtr_ponderado(
+            estaciones_seleccionadas = codigos_sel,
+            tabla_idtr               = IDTR,
+            metodo                   = "idw",
+            distancias               = dists
+          )
         } else {
-          metodo_pond <- input$ponderacion
-          if (metodo_pond == "idw") {
-            dists <- calcular_distancias_punto(
-              crear_punto(
-                mean(IDTR$X[IDTR$CODIGO %in% codigos_sel]),
-                mean(IDTR$Y[IDTR$CODIGO %in% codigos_sel])
-              ),
-              ESTACIONES_SF[ESTACIONES_SF$CODIGO %in% codigos_sel, ]
-            )
-            pesos <- calcular_pesos_idw(codigos_sel, dists)
-            calcular_idtr_ponderado(
-              codigos_sel, IDTR, TR_sel,
-              metodo = "idw", pesos = pesos
-            )
-          } else {
-            calcular_idtr_ponderado(codigos_sel, IDTR, TR_sel, metodo = "promedio")
-          }
+          calcular_idtr_ponderado(
+            estaciones_seleccionadas = codigos_sel,
+            tabla_idtr               = IDTR,
+            metodo                   = "simple"
+          )
         }
       }, error = function(e) {
         rv$error_calc <<- paste("Error al calcular Idtr:", conditionMessage(e))
@@ -379,16 +453,14 @@ server <- function(input, output, session) {
       incProgress(0.4, detail = "Aplicando fórmula INAMHI")
       resultado_inamhi <- tryCatch(
         calcular_precipitacion_inamhi_completo(
-          zona     = zona_sel,
-          TR       = TR_sel,
+          zona           = zona_sel,
+          TR             = TR_sel,
           duracion_horas = dur_horas,
           paso_minutos   = paso_min,
-          idtr     = idtr_pond,
+          idtr_ponderado = idtr_pond,
           datos_sistema  = list(
             parametros_inamhi = PARAMETROS_INAMHI,
-            idtr              = IDTR,
-            curvas_huff       = CURVAS_HUFF,
-            curvas_scs        = CURVAS_SCS
+            idtr              = IDTR
           )
         ),
         error = function(e) {
@@ -399,7 +471,7 @@ server <- function(input, output, session) {
       if (is.null(resultado_inamhi)) return()
 
       precip_total  <- resultado_inamhi$precip_total
-      lista_tablas  <- resultado_inamhi$lista_tablas
+      lista_tablas  <- resultado_inamhi$lista_tablas_idf
 
       # Paso 3: Hietograma según método
       incProgress(0.3, detail = paste("Método:", input$metodo))
@@ -411,16 +483,14 @@ server <- function(input, output, session) {
             duracion_horas = dur_horas,
             paso_minutos   = paso_min,
             cuartil        = as.integer(input$huff_cuartil),
-            probabilidad   = as.integer(input$huff_prob),
-            curvas_huff    = CURVAS_HUFF
+            probabilidad   = as.integer(input$huff_prob)
           ),
           scs = calcular_multiples_scs(
             precip_total   = precip_total,
             TR             = TR_sel,
             duracion_horas = dur_horas,
             paso_minutos   = paso_min,
-            tipo_scs       = input$scs_tipo,
-            curvas_scs     = CURVAS_SCS
+            tipo_scs       = input$scs_tipo
           ),
           bloque_alterno = calcular_multiples_bloque_alterno(
             lista_tablas = lista_tablas,
