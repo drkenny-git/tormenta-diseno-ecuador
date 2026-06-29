@@ -1,0 +1,17 @@
+# R
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+*.Rproj.user
+
+# Shiny
+rsconnect/
+
+# Outputs generados por la app (no van al repo)
+output/
+data_usuario/
+
+# OS
+.DS_Store
+Thumbs.db
