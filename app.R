@@ -17,21 +17,12 @@ tema_app <- bs_theme(
 # ══════════════════════════════════════════════════════════════════════════════
 
 ui <- page_sidebar(
-  title  = "Hietogramas de Diseño — Ecuador",
-  theme  = tema_app,
-  lang   = "es",
+  title    = "Hietogramas de Diseño — Ecuador",
+  theme    = tema_app,
+  lang     = "es",
+  fillable = FALSE,   # permite que la página haga scroll normal
 
   useShinyjs(),
-
-  # CSS para el contorno de clusters (diferente color al de las zonas)
-  tags$style(HTML("
-    .leaflet-cluster-hull {
-      stroke: #e6550d !important;
-      fill: #fdae6b !important;
-      fill-opacity: 0.12 !important;
-      stroke-width: 1.5px !important;
-    }
-  ")),
 
   # ── Sidebar ──────────────────────────────────────────────────────────────
   sidebar = sidebar(
@@ -46,6 +37,27 @@ ui <- page_sidebar(
     ),
 
     hr(),
+
+    # Cuenca de estudio — accordion colapsado por defecto (opcional)
+    accordion(
+      id   = "cuenca_accordion",
+      open = FALSE,
+      accordion_panel(
+        title = "0. Cuenca de estudio (opcional)",
+        value = "cuenca_panel",
+        p(class = "text-muted small",
+          "Sube el shapefile de tu cuenca comprimido como .zip (debe incluir ",
+          ".shp, .dbf, .shx). Se acepta cualquier CRS — se transforma ",
+          "automáticamente a UTM 17S (EPSG:32717). Si falta el .prj se asume WGS84."),
+        fileInput(
+          "cuenca_zip", NULL,
+          accept      = ".zip",
+          buttonLabel = "Buscar .zip…",
+          placeholder = "shapefile + archivos complementarios"
+        ),
+        uiOutput("cuenca_status_ui")
+      )
+    ),
 
     # Zona INAMHI
     card(
@@ -79,14 +91,13 @@ ui <- page_sidebar(
         ),
         conditionalPanel(
           "input.estaciones.length > 1",
-          radioButtons(
-            "ponderacion", "Método de ponderación:",
-            choices  = c("IDW" = "idw", "Promedio simple" = "promedio"),
-            inline   = TRUE
-          )
+          uiOutput("ponderacion_ui")
         )
       )
     ),
+
+    # Punto de referencia IDW (se muestra dinámicamente desde server)
+    uiOutput("idw_punto_card_ui"),
 
     # Parámetros de tormenta
     card(
@@ -192,12 +203,54 @@ ui <- page_sidebar(
       card_header("Mapa — Zonas y estaciones INAMHI"),
       card_body(
         padding = 0,
-        leafletOutput("mapa", height = "380px")
+        leafletOutput("mapa", height = "420px")
       )
     ),
 
     # Resultados (se muestran solo tras calcular)
-    uiOutput("panel_resultados")
+    uiOutput("panel_resultados"),
+
+    # Bibliografía
+    accordion(
+      open = FALSE,
+      accordion_panel(
+        title = "Bibliografía",
+        value = "biblio_panel",
+        tags$ol(
+          class = "small lh-lg mb-0",
+          tags$li(
+            "Huff, F. A. (1990). ",
+            tags$em("Time distributions of heavy rainstorms in Illinois"),
+            ". Illinois State Water Survey. ",
+            tags$a("Semantic Scholar", href = "https://api.semanticscholar.org/CorpusID:130612777",
+                   target = "_blank", rel = "noopener")
+          ),
+          tags$li(
+            "Keifer, C. J., & Chu, H. H. (1957). Synthetic storm pattern for drainage design. ",
+            tags$em("Journal of the Hydraulics Division"),
+            ", 83(4), 1332-1–1332-25. ",
+            tags$a("https://doi.org/10.1061/JYCEAJ.0000104",
+                   href = "https://doi.org/10.1061/JYCEAJ.0000104",
+                   target = "_blank", rel = "noopener")
+          ),
+          tags$li(
+            "U.S. Department of Agriculture, Soil Conservation Service (SCS). (1986). ",
+            tags$em("Urban Hydrology for Small Watersheds"),
+            " (Technical Release No. 55, TR-55). Washington, D.C."
+          ),
+          tags$li(
+            "Chow, V. T., Maidment, D. R., & Mays, L. W. (1988). ",
+            tags$em("Applied Hydrology"),
+            ". McGraw-Hill."
+          ),
+          tags$li(
+            "INAMHI. (2019). ",
+            tags$em("Determinación de ecuaciones para el cálculo de intensidades máximas de precipitación"),
+            ". Versión 2. Instituto Nacional de Meteorología e Hidrología, Ecuador."
+          )
+        )
+      )
+    )
   )
 )
 
@@ -209,14 +262,24 @@ server <- function(input, output, session) {
 
   # ── Estado reactivo -------------------------------------------------------
   rv <- reactiveValues(
-    resultado   = NULL,   # lista con hietogramas calculados
-    curva_valid = NULL,   # resultado de validar_curva_personalizada()
-    error_calc  = NULL
+    resultado           = NULL,
+    curva_valid         = NULL,
+    error_calc          = NULL,
+    cuenca              = NULL,
+    cuenca_error        = NULL,
+    zona_sugerida       = NULL,
+    estaciones_cercanas = NULL,
+    idw_punto_x         = NA_real_,
+    idw_punto_y         = NA_real_
   )
 
   # ── Mapa Leaflet ----------------------------------------------------------
   output$mapa <- renderLeaflet({
     mapa_base <- leaflet() |>
+      # Panes con z-index: zonas (390) debajo de markers (overlayPane=400, markerPane=600)
+      addMapPane("zonas_pane",   zIndex = 390) |>
+      addMapPane("cuenca_pane",  zIndex = 395) |>
+      addMapPane("idw_pane",     zIndex = 610) |>
       addProviderTiles("CartoDB.Positron") |>
       setView(lng = -78.2, lat = -1.8, zoom = 7)
 
@@ -231,32 +294,43 @@ server <- function(input, output, session) {
           color       = "#2c7bb6",
           weight      = 1,
           label       = ~paste("Zona", ZONA),
+          options     = pathOptions(pane = "zonas_pane"),
           highlightOptions = highlightOptions(
             weight      = 2,
             fillOpacity = 0.35,
-            bringToFront = TRUE
+            bringToFront = FALSE   # no bringToFront para no saltar sobre markers
           )
         )
     }
 
     mapa_base |>
       addCircleMarkers(
-        data           = sf::st_transform(ESTACIONES_SF, 4326),
-        layerId        = ~CODIGO,
-        radius         = 5,
-        color          = "#d7191c",
-        fillColor      = "#d7191c",
-        fillOpacity    = 0.8,
-        stroke         = FALSE,
-        label          = ~paste0(CODIGO, " — ", ESTACION),
-        options        = markerOptions(zIndexOffset = 1000),
-        clusterOptions = markerClusterOptions()
+        data        = sf::st_transform(ESTACIONES_SF, 4326),
+        layerId     = ~CODIGO,
+        radius      = 5,
+        color       = "#d7191c",
+        fillColor   = "#d7191c",
+        fillOpacity = 0.8,
+        stroke      = FALSE,
+        label       = ~paste0(CODIGO, " — ", ESTACION),
+        clusterOptions = markerClusterOptions(
+          polygonOptions = list(
+            stroke      = TRUE,
+            color       = "#e6550d",
+            fillColor   = "#fdae6b",
+            fillOpacity = 0.12,
+            weight      = 1.5
+          )
+        )
       ) |>
       addControl(
         html = HTML(paste0(
           '<div style="background:white;padding:8px 10px;border-radius:6px;',
           'font-size:12px;line-height:1.6;box-shadow:0 1px 4px rgba(0,0,0,.25)">',
           '<b>Referencias</b><br>',
+          '<span style="display:inline-block;width:14px;height:14px;',
+          'background:#1a9641;opacity:.4;border:2px solid #1a9641;',
+          'vertical-align:middle;margin-right:5px"></span>Cuenca de estudio<br>',
           '<span style="display:inline-block;width:14px;height:14px;',
           'background:#2c7bb6;opacity:.4;border:1px solid #2c7bb6;',
           'vertical-align:middle;margin-right:5px"></span>Zona de intensidad INAMHI<br>',
@@ -266,13 +340,14 @@ server <- function(input, output, session) {
           '<span style="display:inline-block;width:12px;height:12px;border-radius:50%;',
           'background:#d7191c;vertical-align:middle;margin-right:5px"></span>',
           'Estación pluviométrica<br>',
+          '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;',
+          'background:#9933cc;border:2px solid #6600aa;',
+          'vertical-align:middle;margin-right:5px"></span>',
+          'Punto de referencia IDW<br>',
           '<span style="display:inline-block;width:20px;height:14px;',
           'background:#fdae6b;border:1.5px solid #e6550d;border-radius:3px;',
           'opacity:.7;vertical-align:middle;margin-right:5px"></span>',
-          'Contorno de grupo de estaciones<br>',
-          '<span style="font-size:11px;color:#666">',
-          'El número en cada círculo indica la cantidad de estaciones.',
-          ' Clic para expandir.</span>',
+          'Contorno de grupo de estaciones',
           '</div>'
         )),
         position = "bottomleft"
@@ -298,6 +373,65 @@ server <- function(input, output, session) {
     }
   })
 
+  # Clic en el fondo del mapa → captura punto IDW si está en ese modo
+  observeEvent(input$mapa_click, {
+    req(!is.null(input$idw_modo_punto) && input$idw_modo_punto == "mapa")
+    lat <- input$mapa_click$lat
+    lng <- input$mapa_click$lng
+    tryCatch({
+      pto_wgs84 <- sf::st_sfc(sf::st_point(c(lng, lat)), crs = 4326)
+      pto_utm   <- sf::st_transform(pto_wgs84, 32717)
+      coords    <- sf::st_coordinates(pto_utm)
+      rv$idw_punto_x <- round(coords[1, "X"])
+      rv$idw_punto_y <- round(coords[1, "Y"])
+      updateNumericInput(session, "idw_x", value = rv$idw_punto_x)
+      updateNumericInput(session, "idw_y", value = rv$idw_punto_y)
+    }, error = function(e) NULL)
+  })
+
+  # Sincronizar coords manuales → rv
+  observeEvent(list(input$idw_x, input$idw_y), {
+    req(!is.null(input$idw_modo_punto) && input$idw_modo_punto == "manual")
+    if (!is.na(input$idw_x) && !is.na(input$idw_y)) {
+      rv$idw_punto_x <- input$idw_x
+      rv$idw_punto_y <- input$idw_y
+    }
+  }, ignoreInit = TRUE)
+
+  # Mostrar punto IDW en mapa
+  observe({
+    req(!is.na(rv$idw_punto_x), !is.na(rv$idw_punto_y))
+    pto_utm   <- crear_punto(rv$idw_punto_x, rv$idw_punto_y)
+    pto_wgs84 <- sf::st_transform(pto_utm, 4326)
+    coords    <- sf::st_coordinates(pto_wgs84)
+    leafletProxy("mapa") |>
+      clearGroup("idw_punto") |>
+      addCircleMarkers(
+        lng        = coords[1, "X"],
+        lat        = coords[1, "Y"],
+        group      = "idw_punto",
+        radius     = 8,
+        color      = "#6600aa",
+        fillColor  = "#9933cc",
+        fillOpacity = 0.85,
+        weight     = 2,
+        label      = HTML(sprintf(
+          "<b>Punto IDW</b><br>X: %.0f m<br>Y: %.0f m",
+          rv$idw_punto_x, rv$idw_punto_y
+        )),
+        options = pathOptions(pane = "idw_pane")
+      )
+  })
+
+  # Limpiar punto IDW del mapa cuando se cambia modo
+  observeEvent(input$idw_modo_punto, {
+    if (!is.null(input$idw_modo_punto) && input$idw_modo_punto == "centroide") {
+      rv$idw_punto_x <- NA_real_
+      rv$idw_punto_y <- NA_real_
+      leafletProxy("mapa") |> clearGroup("idw_punto")
+    }
+  })
+
   # Resaltar zona seleccionada en el mapa
   observeEvent(input$zona, {
     leafletProxy("mapa") |>
@@ -314,10 +448,255 @@ server <- function(input, output, session) {
             fillColor   = "#fdae61",
             fillOpacity = 0.45,
             color       = "#f46d43",
-            weight      = 2
+            weight      = 2,
+            options     = pathOptions(pane = "zonas_pane")
           )
       }
     }
+  })
+
+  # ── Cuenca: carga del shapefile desde ZIP --------------------------------
+  observeEvent(input$cuenca_zip, {
+    req(input$cuenca_zip)
+    rv$cuenca_error        <- NULL
+    rv$cuenca              <- NULL
+    rv$zona_sugerida       <- NULL
+    rv$estaciones_cercanas <- NULL
+
+    tmp_dir <- file.path(tempdir(), paste0("cuenca_", as.integer(Sys.time())))
+    dir.create(tmp_dir, recursive = TRUE, showWarnings = FALSE)
+
+    tryCatch({
+      utils::unzip(input$cuenca_zip$datapath, exdir = tmp_dir)
+      shp_files <- list.files(tmp_dir, pattern = "\\.shp$", recursive = TRUE,
+                              full.names = TRUE)
+      if (length(shp_files) == 0) {
+        rv$cuenca_error <- "El ZIP no contiene ningún archivo .shp."
+        return()
+      }
+      cuenca <- sf::st_read(shp_files[1], quiet = TRUE)
+      geom_types <- unique(as.character(sf::st_geometry_type(cuenca)))
+      if (!any(grepl("POLYGON", geom_types, ignore.case = TRUE))) {
+        rv$cuenca_error <- paste0("Se esperaba un polígono; se encontró: ",
+                                  paste(geom_types, collapse = ", "), ".")
+        return()
+      }
+      if (is.na(sf::st_crs(cuenca))) sf::st_crs(cuenca) <- 4326
+      if (!identical(sf::st_crs(cuenca), sf::st_crs(32717))) {
+        cuenca <- sf::st_transform(cuenca, 32717)
+      }
+      rv$cuenca <- cuenca
+
+    }, error = function(e) {
+      rv$cuenca_error <- paste("Error al cargar el shapefile:", conditionMessage(e))
+    })
+  })
+
+  # ── Cuenca: sugerencias y actualización del mapa -------------------------
+  observeEvent(rv$cuenca, {
+    req(!is.null(rv$cuenca))
+
+    if (!is.null(ZONAS)) {
+      tryCatch({
+        rv$zona_sugerida <- determinar_zona_cuenca(rv$cuenca, ZONAS)
+        updateSelectInput(session, "zona",
+                          selected = rv$zona_sugerida$zona_principal)
+      }, error = function(e) NULL)
+    }
+
+    tryCatch({
+      dists  <- calcular_distancias_cuenca(rv$cuenca, ESTACIONES_SF)
+      dentro <- estaciones_dentro_cuenca(rv$cuenca, ESTACIONES_SF)
+      rv$estaciones_cercanas <- listar_estaciones_cercanas(
+        dists, IDTR, p = 8, estaciones_dentro = dentro
+      )
+    }, error = function(e) NULL)
+
+    cuenca_wgs84 <- sf::st_transform(rv$cuenca, 4326)
+    bb <- sf::st_bbox(cuenca_wgs84)
+    leafletProxy("mapa") |>
+      clearGroup("cuenca") |>
+      addPolygons(
+        data        = cuenca_wgs84,
+        group       = "cuenca",
+        fillColor   = "#1a9641",
+        fillOpacity = 0.25,
+        color       = "#1a9641",
+        weight      = 3,
+        label       = "Cuenca de estudio",
+        options     = pathOptions(pane = "cuenca_pane")
+      ) |>
+      fitBounds(bb["xmin"], bb["ymin"], bb["xmax"], bb["ymax"])
+  })
+
+  # ── Cuenca: limpiar ------------------------------------------------------
+  observeEvent(input$limpiar_cuenca, {
+    rv$cuenca              <- NULL
+    rv$cuenca_error        <- NULL
+    rv$zona_sugerida       <- NULL
+    rv$estaciones_cercanas <- NULL
+    leafletProxy("mapa") |> clearGroup("cuenca")
+  })
+
+  # ── Cuenca: agregar estación cercana al hacer clic en la lista -----------
+  observeEvent(input$agregar_estacion_cercana, {
+    req(input$agregar_estacion_cercana)
+    codigo <- input$agregar_estacion_cercana
+    actual <- input$estaciones
+    if (!codigo %in% actual) {
+      updateSelectizeInput(session, "estaciones", selected = c(actual, codigo))
+    }
+  })
+
+  # ── Cuenca: agregar las 5 más cercanas de golpe --------------------------
+  observeEvent(input$agregar_cercanas_btn, {
+    req(rv$estaciones_cercanas)
+    top5   <- head(rv$estaciones_cercanas$CODIGO, 5)
+    nuevas <- unique(c(input$estaciones, top5))
+    updateSelectizeInput(session, "estaciones", selected = nuevas)
+  })
+
+  # ── Cuenca: UI de estado y sugerencias -----------------------------------
+  output$cuenca_status_ui <- renderUI({
+    if (!is.null(rv$cuenca_error)) {
+      return(div(class = "alert alert-danger py-1 small mt-1",
+                 icon("triangle-exclamation"), " ", rv$cuenca_error))
+    }
+    if (is.null(rv$cuenca)) return(NULL)
+
+    area_km2 <- round(
+      as.numeric(sf::st_area(sf::st_union(rv$cuenca))) / 1e6, 2
+    )
+
+    tagList(
+      div(
+        class = "d-flex align-items-center gap-2 mt-1",
+        div(class = "alert alert-success py-1 px-2 small mb-0 flex-grow-1",
+            icon("check"),
+            sprintf(" Cuenca cargada — %.2f km²", area_km2)),
+        actionLink("limpiar_cuenca", "× Limpiar", class = "small text-muted")
+      ),
+
+      if (!is.null(rv$zona_sugerida)) {
+        nz  <- nrow(rv$zona_sugerida$todas_zonas)
+        msg <- if (nz > 1) {
+          sprintf("Zona dominante: %d (%.0f%% de la cuenca; %d zonas en total)",
+                  rv$zona_sugerida$zona_principal,
+                  rv$zona_sugerida$porcentaje_principal, nz)
+        } else {
+          sprintf("Zona: %d (100%% de la cuenca)",
+                  rv$zona_sugerida$zona_principal)
+        }
+        div(class = "alert alert-info py-1 px-2 small mt-1 mb-0",
+            icon("location-crosshairs"), " ", msg)
+      },
+
+      if (!is.null(rv$estaciones_cercanas)) {
+        tagList(
+          div(class = "small fw-semibold mt-2 mb-1",
+              "Estaciones cercanas (clic para agregar):"),
+          tags$div(
+            class = "list-group list-group-flush border rounded",
+            lapply(seq_len(nrow(rv$estaciones_cercanas)), function(i) {
+              est <- rv$estaciones_cercanas[i, ]
+              badge <- if (isTRUE(est$dentro_cuenca)) {
+                tags$span(class = "badge bg-success fw-normal ms-1", "dentro")
+              }
+              tags$button(
+                type    = "button",
+                class   = "list-group-item list-group-item-action py-1 px-2 small",
+                onclick = sprintf(
+                  "Shiny.setInputValue('agregar_estacion_cercana','%s',{priority:'event'})",
+                  est$CODIGO
+                ),
+                div(
+                  class = "d-flex justify-content-between align-items-center",
+                  span(paste0(est$CODIGO, " — ", est$ESTACION), badge),
+                  span(class = "text-muted ms-2 text-nowrap",
+                       paste0(est$distancia_km, " km"))
+                )
+              )
+            })
+          ),
+          div(
+            class = "mt-1",
+            actionButton(
+              "agregar_cercanas_btn", "Agregar las 5 más cercanas",
+              icon  = icon("plus"),
+              class = "btn-sm btn-outline-secondary w-100"
+            )
+          )
+        )
+      }
+    )
+  })
+
+  # ── Ponderación: opciones dinámicas (Thiessen solo si hay cuenca) --------
+  output$ponderacion_ui <- renderUI({
+    choices <- c("IDW" = "idw", "Promedio simple" = "promedio")
+    if (!is.null(rv$cuenca)) choices <- c("Thiessen" = "thiessen", choices)
+    curr <- if (!is.null(input$ponderacion) && input$ponderacion %in% choices) {
+      input$ponderacion
+    } else "idw"
+    radioButtons("ponderacion", "Método de ponderación:",
+                 choices = choices, selected = curr, inline = TRUE)
+  })
+
+  # ── IDW punto de referencia (card dinámico) ------------------------------
+  output$idw_punto_card_ui <- renderUI({
+    n_est      <- length(input$estaciones)
+    metodo_p   <- input$ponderacion
+    tiene_cuenca <- !is.null(rv$cuenca)
+
+    # Solo mostrar cuando IDW + más de 1 estación + sin cuenca
+    if (is.null(metodo_p) || metodo_p != "idw") return(NULL)
+    if (n_est <= 1) return(NULL)
+    if (tiene_cuenca) return(NULL)
+
+    curr_modo <- {
+      m <- isolate(input$idw_modo_punto)
+      if (is.null(m)) "centroide" else m
+    }
+    curr_x <- isolate(rv$idw_punto_x)
+    curr_y <- isolate(rv$idw_punto_y)
+
+    card(
+      card_header("Punto de referencia IDW"),
+      card_body(
+        conditionalPanel(
+          "!input.modo_experto",
+          p(class = "text-muted small",
+            "IDW necesita un punto de referencia para calcular las distancias. ",
+            "Por defecto usa el centroide geométrico de las estaciones seleccionadas.")
+        ),
+        radioButtons(
+          "idw_modo_punto", NULL,
+          choices  = c(
+            "Centroide de estaciones" = "centroide",
+            "Clic en el mapa"        = "mapa",
+            "Coordenadas manuales"   = "manual"
+          ),
+          selected = curr_modo
+        ),
+        conditionalPanel(
+          "input.idw_modo_punto == 'mapa'",
+          div(class = "alert alert-info py-1 px-2 small",
+              icon("hand-pointer"),
+              " Haz clic en el mapa para ubicar el punto de referencia.")
+        ),
+        conditionalPanel(
+          "input.idw_modo_punto != 'centroide'",
+          div(
+            class = "row g-1 mt-1",
+            div(class = "col-6",
+                numericInput("idw_x", "X Este (m):", value = curr_x, step = 1000)),
+            div(class = "col-6",
+                numericInput("idw_y", "Y Norte (m):", value = curr_y, step = 1000))
+          ),
+          p(class = "text-muted small mb-0", "UTM Zona 17S — EPSG:32717")
+        )
+      )
+    )
   })
 
   # ── Validación de curva personalizada ------------------------------------
@@ -352,19 +731,22 @@ server <- function(input, output, session) {
   # ── Huff: cuartil recomendado según duración --------------------------------
   cuartil_recomendado <- reactive({
     req(input$duracion_horas)
+    req(!is.na(input$duracion_horas))
     huff_cuartil_para_duracion(input$duracion_horas)
   })
 
   observeEvent(input$duracion_horas, {
+    req(!is.na(input$duracion_horas))
     updateSelectInput(session, "huff_cuartil",
                       selected = huff_cuartil_para_duracion(input$duracion_horas))
   }, ignoreInit = TRUE)
 
   output$huff_cuartil_aviso <- renderUI({
-    req(input$metodo == "huff", input$huff_cuartil, input$duracion_horas)
+    req(input$metodo == "huff", input$huff_cuartil)
+    req(!is.null(input$duracion_horas), !is.na(input$duracion_horas))
     sel <- as.integer(input$huff_cuartil)
     rec <- cuartil_recomendado()
-    if (sel != rec) {
+    if (!is.null(rec) && sel != rec) {
       div(class = "alert alert-warning py-1 small mt-1",
           icon("triangle-exclamation"),
           sprintf(" Para %.0f h se recomienda Q%d. Estás usando Q%d.",
@@ -404,6 +786,16 @@ server <- function(input, output, session) {
       rv$error_calc <- "Selecciona al menos un período de retorno."
       return()
     }
+    dur_horas <- input$duracion_horas
+    paso_min  <- input$paso_minutos
+    if (is.null(dur_horas) || is.na(dur_horas) || dur_horas <= 0) {
+      rv$error_calc <- "Ingresa un valor válido para la duración (> 0 horas)."
+      return()
+    }
+    if (is.null(paso_min) || is.na(paso_min) || paso_min <= 0) {
+      rv$error_calc <- "Ingresa un valor válido para el paso de tiempo (> 0 minutos)."
+      return()
+    }
     if (input$metodo == "personalizado") {
       if (is.null(rv$curva_valid) || !rv$curva_valid$valido) {
         rv$error_calc <- "La curva personalizada no es válida o no ha sido cargada."
@@ -411,23 +803,49 @@ server <- function(input, output, session) {
       }
     }
 
-    TR_sel       <- as.numeric(input$TR)
-    zona_sel     <- as.integer(input$zona)
-    codigos_sel  <- input$estaciones
-    dur_horas    <- input$duracion_horas
-    paso_min     <- input$paso_minutos
+    TR_sel      <- as.numeric(input$TR)
+    zona_sel    <- as.integer(input$zona)
+    codigos_sel <- input$estaciones
 
     withProgress(message = "Calculando…", value = 0, {
 
       # Paso 1: Idtr ponderado
       incProgress(0.2, detail = "Ponderando estaciones")
       idtr_pond <- tryCatch({
-        if (length(codigos_sel) > 1 && input$ponderacion == "idw") {
-          dists <- calcular_distancias_punto(
+        metodo_pond <- if (length(codigos_sel) > 1 && !is.null(input$ponderacion)) {
+          input$ponderacion
+        } else "simple"
+
+        if (metodo_pond == "thiessen") {
+          if (is.null(rv$cuenca)) stop("Se requiere una cuenca cargada para usar Thiessen.")
+          calcular_idtr_ponderado(
+            estaciones_seleccionadas = codigos_sel,
+            tabla_idtr               = IDTR,
+            metodo                   = "thiessen",
+            cuenca                   = rv$cuenca,
+            estaciones_sf            = ESTACIONES_SF
+          )
+        } else if (metodo_pond == "idw") {
+          # Determinar punto de referencia
+          punto_ref <- if (!is.null(rv$cuenca)) {
+            # Cuenca disponible: usar centroide de cuenca
+            ctrd  <- sf::st_centroid(sf::st_union(rv$cuenca))
+            cxy   <- sf::st_coordinates(ctrd)
+            crear_punto(cxy[1, "X"], cxy[1, "Y"])
+          } else if (!is.null(input$idw_modo_punto) &&
+                     input$idw_modo_punto != "centroide" &&
+                     !is.na(rv$idw_punto_x) && !is.na(rv$idw_punto_y)) {
+            # Punto seleccionado por el usuario (mapa o manual)
+            crear_punto(rv$idw_punto_x, rv$idw_punto_y)
+          } else {
+            # Por defecto: centroide de estaciones seleccionadas
             crear_punto(
               mean(IDTR$X[IDTR$CODIGO %in% codigos_sel]),
               mean(IDTR$Y[IDTR$CODIGO %in% codigos_sel])
-            ),
+            )
+          }
+          dists <- calcular_distancias_punto(
+            punto_ref,
             ESTACIONES_SF[ESTACIONES_SF$CODIGO %in% codigos_sel, ]
           )
           calcular_idtr_ponderado(
@@ -470,8 +888,8 @@ server <- function(input, output, session) {
       )
       if (is.null(resultado_inamhi)) return()
 
-      precip_total  <- resultado_inamhi$precip_total
-      lista_tablas  <- resultado_inamhi$lista_tablas_idf
+      precip_total <- resultado_inamhi$precip_total
+      lista_tablas <- resultado_inamhi$lista_tablas_idf
 
       # Paso 3: Hietograma según método
       incProgress(0.3, detail = paste("Método:", input$metodo))
@@ -513,13 +931,13 @@ server <- function(input, output, session) {
 
       incProgress(0.1, detail = "Listo")
       rv$resultado <- list(
-        hietogramas   = hietogramas,
-        precip_total  = precip_total,
-        TR            = TR_sel,
-        metodo        = input$metodo,
-        zona          = zona_sel,
-        dur_horas     = dur_horas,
-        paso_minutos  = paso_min
+        hietogramas  = hietogramas,
+        precip_total = precip_total,
+        TR           = TR_sel,
+        metodo       = input$metodo,
+        zona         = zona_sel,
+        dur_horas    = dur_horas,
+        paso_minutos = paso_min
       )
     })
   })
@@ -574,8 +992,8 @@ server <- function(input, output, session) {
   output$tabla_precip <- renderTable({
     req(rv$resultado)
     data.frame(
-      `TR (años)`       = rv$resultado$TR,
-      `P total (mm)`    = round(rv$resultado$precip_total, 2),
+      `TR (años)`    = rv$resultado$TR,
+      `P total (mm)` = round(rv$resultado$precip_total, 2),
       check.names = FALSE
     )
   }, striped = TRUE, hover = TRUE, bordered = TRUE, align = "r")
@@ -621,7 +1039,7 @@ server <- function(input, output, session) {
     content = function(file) {
       exportar_multiples_excel(
         lista_hietogramas = rv$resultado$hietogramas,
-        nombre_archivo    = file,
+        nombre_archivo    = basename(file),   # FIX: era 'file' completo
         directorio        = dirname(file),
         metodo            = rv$resultado$metodo
       )
