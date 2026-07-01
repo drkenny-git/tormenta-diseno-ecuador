@@ -327,9 +327,48 @@ ui <- page_sidebar(
     # Resultados
     uiOutput("panel_resultados"),
 
-    # Bibliografía
+    # Aviso de fuente de datos y contacto
     accordion(
-      open = FALSE,
+      open = "aviso_panel",
+      accordion_panel(
+        title = "Fuente de datos y limitaciones",
+        value = "aviso_panel",
+        icon  = icon("triangle-exclamation"),
+        div(
+          class = "small",
+          p(
+            "Los valores usados en las ecuaciones INAMHI (K, n), los rangos de duración, ",
+            "los valores de Idtr por estación y período de retorno, y las coordenadas de las ",
+            "estaciones fueron extraídos ", tags$strong("manualmente"), " del estudio de lluvias ",
+            "intensas del INAMHI (2019). Este proceso puede estar sujeto a errores de transcripción."
+          ),
+          p(
+            "Las 72 zonas de intensidad que se muestran en el mapa ", tags$strong("no son las zonas oficiales del INAMHI"),
+            ": fueron generadas de forma independiente a partir de la ubicación de las estaciones ",
+            "pluviográficas, aplicando el método de Polígonos de Thiessen. Por lo tanto pueden diferir ",
+            "de la zonificación oficial del INAMHI."
+          ),
+          p(
+            "Si encuentras errores en los valores, ecuaciones, zonas u otros datos, o tienes ",
+            "sugerencias sobre el uso de la app, puedes contactarme:"
+          ),
+          tags$ul(
+            class = "mb-0",
+            tags$li(
+              icon("envelope"), " ",
+              tags$a("christiang.dominguezg@gmail.com",
+                     href = "mailto:christiang.dominguezg@gmail.com")
+            ),
+            tags$li(
+              icon("github"), " ",
+              tags$a("github.com/drkenny-git/nombre-por-actualizar",
+                     href   = "https://github.com/drkenny-git/nombre-por-actualizar",
+                     target = "_blank", rel = "noopener"),
+              " (reporta un issue)"
+            )
+          )
+        )
+      ),
       accordion_panel(
         title = "Bibliografía",
         value = "biblio_panel",
