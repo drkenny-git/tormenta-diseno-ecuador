@@ -8,6 +8,9 @@
 # Shiny
 rsconnect/
 
+# Credencial de cuenta de servicio Google Sheets (estadísticas de uso) — nunca al repo
+tormenta-diseno-ecuador-113bba061921.json
+
 # Outputs generados por la app (no van al repo)
 output/
 data_usuario/

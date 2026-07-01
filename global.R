@@ -10,6 +10,7 @@ library(ggplot2)
 library(writexl)
 library(sf)
 library(leaflet)
+library(googlesheets4)
 
 # Funciones del motor ----------------------------------------------------
 scripts <- c(
@@ -73,4 +74,55 @@ huff_cuartil_para_duracion <- function(dur_horas) {
   else if (dur_horas < 12) 2L
   else if (dur_horas < 24) 3L
   else                     4L
+}
+
+# Estadísticas de uso (Google Sheets) --------------------------------------
+# Registro básico (zona, estaciones, método, TR, duración, paso, ponderación,
+# timestamp — sin datos personales) de cada cálculo exitoso. Si la credencial
+# no está presente (p. ej. un clon del repo sin el archivo local, que nunca
+# se sube a git), las estadísticas quedan desactivadas sin romper la app.
+GSHEETS_KEY_PATH <- Sys.getenv("GSHEETS_KEY_PATH",
+                                "tormenta-diseno-ecuador-113bba061921.json")
+GSHEETS_SHEET_ID <- "13ukdlMBM8XmVaC3xyAqUUsbN5vJ4y55vFEB69iUcg1I"
+
+ESTADISTICAS_ACTIVAS <- FALSE
+if (file.exists(GSHEETS_KEY_PATH)) {
+  ESTADISTICAS_ACTIVAS <- tryCatch({
+    googlesheets4::gs4_auth(path = GSHEETS_KEY_PATH)
+    TRUE
+  }, error = function(e) {
+    warning("No se pudo autenticar con Google Sheets para estadísticas de uso: ",
+            conditionMessage(e))
+    FALSE
+  })
+} else {
+  warning("No se encontró la credencial de Google Sheets (", GSHEETS_KEY_PATH,
+          "); estadísticas de uso desactivadas.")
+}
+
+#' Registra un cálculo exitoso en la hoja de estadísticas de uso.
+#' Nunca lanza error hacia el llamador: un fallo de red/API no debe
+#' interrumpir el cálculo del usuario.
+registrar_uso <- function(zona, estaciones, metodo, TR,
+                           duracion_horas, paso_minutos, ponderacion) {
+  if (!ESTADISTICAS_ACTIVAS) return(invisible(NULL))
+  tryCatch({
+    fila <- data.frame(
+      timestamp   = as.character(Sys.time()),
+      zona        = zona,
+      estaciones  = paste(estaciones, collapse = ";"),
+      metodo      = metodo,
+      TR          = paste(TR, collapse = ","),
+      duracion_h  = duracion_horas,
+      paso_min    = paso_minutos,
+      ponderacion = ponderacion,
+      stringsAsFactors = FALSE
+    )
+    suppressMessages(
+      googlesheets4::sheet_append(GSHEETS_SHEET_ID, fila, sheet = "Hoja 1")
+    )
+  }, error = function(e) {
+    warning("No se pudo registrar estadística de uso: ", conditionMessage(e))
+  })
+  invisible(NULL)
 }

@@ -1087,6 +1087,16 @@ server <- function(input, output, session) {
         codigos_sel  = codigos_sel,
         nombres_est  = IDTR$ESTACION[match(codigos_sel, IDTR$CODIGO)]
       )
+
+      registrar_uso(
+        zona           = zona_sel,
+        estaciones     = codigos_sel,
+        metodo         = input$metodo,
+        TR             = TR_sel,
+        duracion_horas = dur_horas,
+        paso_minutos   = paso_min,
+        ponderacion    = metodo_pond
+      )
     })
   })
 
