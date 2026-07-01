@@ -104,6 +104,7 @@ ui <- page_sidebar(
   fillable = FALSE,
 
   useShinyjs(),
+  withMathJax(),
 
   # ── Sidebar ──────────────────────────────────────────────────────────────
   sidebar = sidebar(
@@ -154,18 +155,7 @@ ui <- page_sidebar(
         # ── Punto de referencia
         conditionalPanel(
           "input.sitio_tipo == 'punto'",
-          radioButtons(
-            "punto_modo", NULL,
-            choices  = c("Clic en el mapa" = "mapa",
-                         "Coordenadas manuales" = "manual"),
-            selected = "mapa"
-          ),
-          conditionalPanel(
-            "input.punto_modo == 'mapa'",
-            div(class = "alert alert-info py-1 px-2 small",
-                icon("hand-pointer"),
-                " Haz clic en el mapa para ubicar el sitio de estudio.")
-          ),
+          uiOutput("punto_pick_btn_ui"),
           div(
             class = "row g-1 mt-1",
             div(class = "col-6",
@@ -205,9 +195,10 @@ ui <- page_sidebar(
         conditionalPanel(
           "!input.modo_experto",
           p(class = "text-muted small",
-            "Selecciona estaciones INAMHI cercanas. Las sugerencias aparecen ",
-            "arriba al definir el sitio de estudio.")
+            "Selecciona estaciones INAMHI cercanas. Haz clic en las sugerencias ",
+            "de abajo para agregarlas, o elige manualmente.")
         ),
+        uiOutput("estaciones_sugeridas_ui"),
         selectizeInput(
           "estaciones", "Estaciones:",
           choices  = setNames(IDTR$CODIGO,
@@ -329,7 +320,7 @@ ui <- page_sidebar(
       card_header("Mapa — Zonas y estaciones INAMHI"),
       card_body(
         padding = 0,
-        leafletOutput("mapa", height = "420px")
+        leafletOutput("mapa", height = "650px")
       )
     ),
 
@@ -399,7 +390,8 @@ server <- function(input, output, session) {
     cuenca_zona        = NULL,   # list con zona_principal etc.
     # Punto de referencia
     punto_estaciones   = NULL,   # data.frame de estaciones cercanas (desde punto)
-    punto_zona         = NULL    # zona sugerida desde punto (integer)
+    punto_zona         = NULL,   # zona sugerida desde punto (integer)
+    picking_punto      = FALSE   # TRUE mientras se espera el próximo clic en el mapa
   )
 
   # ── Mapa Leaflet ----------------------------------------------------------
@@ -454,16 +446,64 @@ server <- function(input, output, session) {
       addControl(html = leyenda_html, position = "bottomleft")
   })
 
-  # Clic en zona → actualiza selector
+  # Helper: fija sitio_x/sitio_y a partir de un lat/lng WGS84 del mapa y
+  # desarma el modo de selección (un solo clic fija el punto).
+  fijar_punto_desde_mapa <- function(lat, lng) {
+    tryCatch({
+      pto_wgs84 <- sf::st_sfc(sf::st_point(c(lng, lat)), crs = 4326)
+      pto_utm   <- sf::st_transform(pto_wgs84, 32717)
+      coords    <- sf::st_coordinates(pto_utm)
+      # unname(): con una sola fila, coords[1, "X"] devuelve un vector CON
+      # NOMBRE ("X" = ...), que jsonlite serializa como objeto {"X": ...} en
+      # vez de un número plano — el cliente descarta ese mensaje en silencio.
+      updateNumericInput(session, "sitio_x", value = unname(round(coords[1, "X"])))
+      updateNumericInput(session, "sitio_y", value = unname(round(coords[1, "Y"])))
+    }, error = function(e) NULL)
+    rv$picking_punto <- FALSE
+  }
+
+  # Botón "Elegir en el mapa" → arma el modo de selección de punto
+  observeEvent(input$punto_pick_btn, {
+    rv$picking_punto <- TRUE
+  })
+  observeEvent(input$punto_pick_cancelar, {
+    rv$picking_punto <- FALSE
+  })
+
+  output$punto_pick_btn_ui <- renderUI({
+    if (isTRUE(rv$picking_punto)) {
+      div(
+        class = "alert alert-info py-1 px-2 small d-flex align-items-center justify-content-between gap-2 mb-0",
+        tagList(icon("hand-pointer"), " Haz clic en el mapa para fijar el punto…"),
+        actionLink("punto_pick_cancelar", "Cancelar", class = "small")
+      )
+    } else {
+      actionButton("punto_pick_btn", "Elegir punto en el mapa",
+                   icon = icon("crosshairs"), class = "btn-outline-primary btn-sm")
+    }
+  })
+
+  # Clic en zona → si estamos eligiendo el punto de estudio (modo armado), el
+  # clic fija el punto (las zonas cubren todo el mapa y absorben el clic, por
+  # lo que input$mapa_click casi nunca se dispara). Si no, selecciona la zona.
   observeEvent(input$mapa_shape_click, {
+    if (isTRUE(rv$picking_punto)) {
+      fijar_punto_desde_mapa(input$mapa_shape_click$lat, input$mapa_shape_click$lng)
+      return()
+    }
     zona_id <- input$mapa_shape_click$id
     if (!is.null(zona_id)) {
       updateSelectizeInput(session, "zona", selected = zona_id)
     }
   })
 
-  # Clic en marcador de estación → agrega a la selección
+  # Clic en marcador de estación → agrega a la selección (o fija el punto si
+  # el modo de selección está armado)
   observeEvent(input$mapa_marker_click, {
+    if (isTRUE(rv$picking_punto)) {
+      fijar_punto_desde_mapa(input$mapa_marker_click$lat, input$mapa_marker_click$lng)
+      return()
+    }
     codigo <- input$mapa_marker_click$id
     if (!is.null(codigo)) {
       actual <- input$estaciones
@@ -473,19 +513,10 @@ server <- function(input, output, session) {
     }
   })
 
-  # Clic en el fondo del mapa → sitio de estudio (cuando punto_modo == "mapa")
+  # Clic en el fondo del mapa (fuera de cualquier zona) → sitio de estudio
   observeEvent(input$mapa_click, {
-    req(!is.null(input$sitio_tipo) && input$sitio_tipo == "punto")
-    req(!is.null(input$punto_modo)  && input$punto_modo  == "mapa")
-    lat <- input$mapa_click$lat
-    lng <- input$mapa_click$lng
-    tryCatch({
-      pto_wgs84 <- sf::st_sfc(sf::st_point(c(lng, lat)), crs = 4326)
-      pto_utm   <- sf::st_transform(pto_wgs84, 32717)
-      coords    <- sf::st_coordinates(pto_utm)
-      updateNumericInput(session, "sitio_x", value = round(coords[1, "X"]))
-      updateNumericInput(session, "sitio_y", value = round(coords[1, "Y"]))
-    }, error = function(e) NULL)
+    req(isTRUE(rv$picking_punto))
+    fijar_punto_desde_mapa(input$mapa_click$lat, input$mapa_click$lng)
   })
 
   # Resaltar zona seleccionada en el mapa
@@ -617,8 +648,8 @@ server <- function(input, output, session) {
       leafletProxy("mapa") |>
         clearGroup("sitio_punto") |>
         addCircleMarkers(
-          lng         = coords[1, "X"],
-          lat         = coords[1, "Y"],
+          lng         = unname(coords[1, "X"]),
+          lat         = unname(coords[1, "Y"]),
           group       = "sitio_punto",
           radius      = 8,
           color       = "#6600aa",
@@ -641,6 +672,7 @@ server <- function(input, output, session) {
       leafletProxy("mapa") |> clearGroup("sitio_punto")
       rv$punto_zona       <- NULL
       rv$punto_estaciones <- NULL
+      rv$picking_punto    <- FALSE
     }
     if (!is.null(input$sitio_tipo) && input$sitio_tipo == "punto") {
       rv$cuenca_zona       <- NULL
@@ -690,28 +722,29 @@ server <- function(input, output, session) {
         }
         div(class = "alert alert-info py-1 px-2 small mt-1 mb-0",
             icon("location-crosshairs"), " ", msg)
-      },
-
-      if (!is.null(rv$cuenca_estaciones)) {
-        lista_estaciones_ui(rv$cuenca_estaciones)
       }
     )
   })
 
   # ── Punto: UI de estado y sugerencias ───────────────────────────────────
   output$punto_status_ui <- renderUI({
-    if (is.null(rv$punto_zona) && is.null(rv$punto_estaciones)) return(NULL)
+    req(!is.null(rv$punto_zona))
+    div(class = "alert alert-info py-1 px-2 small mt-2 mb-0",
+        icon("location-crosshairs"),
+        sprintf(" Zona sugerida: %d", rv$punto_zona))
+  })
 
-    tagList(
-      if (!is.null(rv$punto_zona)) {
-        div(class = "alert alert-info py-1 px-2 small mt-2 mb-0",
-            icon("location-crosshairs"),
-            sprintf(" Zona sugerida: %d", rv$punto_zona))
-      },
-      if (!is.null(rv$punto_estaciones)) {
-        lista_estaciones_ui(rv$punto_estaciones)
-      }
-    )
+  # ── Estaciones cercanas sugeridas (cuenca o punto) — mostrado justo encima
+  # de la sección "3. Estaciones pluviométricas" para que se vea claramente
+  # que alimenta esa selección ────────────────────────────────────────────
+  output$estaciones_sugeridas_ui <- renderUI({
+    est_list <- if (!is.null(input$sitio_tipo) && input$sitio_tipo == "punto") {
+      rv$punto_estaciones
+    } else {
+      rv$cuenca_estaciones
+    }
+    req(est_list)
+    lista_estaciones_ui(est_list)
   })
 
   # ── Agregar estación cercana al clicar en la lista ───────────────────────
@@ -721,6 +754,11 @@ server <- function(input, output, session) {
     if (!input$agregar_estacion_cercana %in% actual) {
       updateSelectizeInput(session, "estaciones",
                            selected = c(actual, input$agregar_estacion_cercana))
+      showNotification(
+        sprintf("✓ %s agregada a \"Estaciones pluviométricas\" (sección 3)",
+                input$agregar_estacion_cercana),
+        type = "message", duration = 3
+      )
     }
   })
 
@@ -732,9 +770,22 @@ server <- function(input, output, session) {
       rv$cuenca_estaciones
     }
     req(est_list)
-    top5   <- head(est_list$CODIGO, 5)
-    nuevas <- unique(c(input$estaciones, top5))
+    top5    <- head(est_list$CODIGO, 5)
+    faltan  <- setdiff(top5, input$estaciones)
+    nuevas  <- unique(c(input$estaciones, top5))
     updateSelectizeInput(session, "estaciones", selected = nuevas)
+    if (length(faltan) > 0) {
+      showNotification(
+        sprintf("✓ %d estación(es) agregada(s) a \"Estaciones pluviométricas\" (sección 3)",
+                length(faltan)),
+        type = "message", duration = 3
+      )
+    } else {
+      showNotification(
+        "Las estaciones más cercanas ya estaban seleccionadas.",
+        type = "warning", duration = 3
+      )
+    }
   })
 
   # ── Ponderación: opciones dinámicas ──────────────────────────────────────
@@ -1014,7 +1065,10 @@ server <- function(input, output, session) {
       # Pesos de estaciones
       card(
         card_header("Ponderación de estaciones"),
-        card_body(tableOutput("tabla_pesos"))
+        card_body(
+          p(class = "small text-muted mb-2", textOutput("tabla_pesos_metodo", inline = TRUE)),
+          tableOutput("tabla_pesos")
+        )
       ),
 
       # Idtr ponderado
@@ -1026,7 +1080,7 @@ server <- function(input, output, session) {
       # Ecuaciones INAMHI de la zona
       card(
         card_header(textOutput("zona_params_header", inline = TRUE)),
-        card_body(tableOutput("tabla_ecuaciones"))
+        card_body(uiOutput("tabla_ecuaciones"))
       ),
 
       # Precipitación total por TR
@@ -1060,43 +1114,39 @@ server <- function(input, output, session) {
   })
 
   # ── Tabla pesos de estaciones ────────────────────────────────────────────
+  # Etiqueta del método de ponderación (se muestra aparte de la tabla: pasar
+  # un reactive/función como `caption=` a renderTable rompe xtable con
+  # "the condition has length > 1", ya que xtable espera un string plano).
+  output$tabla_pesos_metodo <- renderText({
+    req(rv$resultado)
+    paste0("Método de ponderación: ", switch(rv$resultado$idtr_pond$metodo_usado,
+      thiessen = "Thiessen", idw = "IDW", simple = "Promedio simple",
+      unica_estacion = "Estación única", rv$resultado$idtr_pond$metodo_usado))
+  })
+
   output$tabla_pesos <- renderTable({
     req(rv$resultado)
     p     <- rv$resultado$idtr_pond
     noms  <- rv$resultado$nombres_est
     cods  <- rv$resultado$codigos_sel
     pesos <- p$pesos[cods]
-    metodo_label <- switch(p$metodo_usado,
-      thiessen         = "Thiessen",
-      idw              = "IDW",
-      simple           = "Promedio simple",
-      unica_estacion   = "Estación única",
-      p$metodo_usado
-    )
-    df <- data.frame(
+    data.frame(
       Código     = cods,
       Estación   = noms,
       `Peso (%)` = round(as.numeric(pesos) * 100, 2),
       check.names = FALSE
     )
-    attr(df, "metodo") <- metodo_label
-    df
-  }, striped = TRUE, hover = TRUE, bordered = TRUE,
-     caption = reactive({
-       req(rv$resultado)
-       paste0("Método de ponderación: ", switch(rv$resultado$idtr_pond$metodo_usado,
-         thiessen = "Thiessen", idw = "IDW", simple = "Promedio simple",
-         unica_estacion = "Estación única", rv$resultado$idtr_pond$metodo_usado))
-     }),
-     caption.placement = "top")
+  }, striped = TRUE, hover = TRUE, bordered = TRUE)
 
   # ── Tabla Idtr ponderado ─────────────────────────────────────────────────
   output$tabla_idtr_pond <- renderTable({
     req(rv$resultado)
-    idtr <- rv$resultado$idtr_pond$idtr_ponderado
+    idtr   <- rv$resultado$idtr_pond$idtr_ponderado
+    TR_sel <- rv$resultado$TR
+    idx    <- match(paste0("TR", TR_sel), names(idtr))
     data.frame(
-      `TR (años)` = c(2, 5, 10, 25, 50, 100),
-      `Idtr (mm/h)` = round(as.numeric(idtr), 3),
+      `TR (años)` = TR_sel,
+      `Idtr (mm/h)` = round(as.numeric(idtr[idx]), 3),
       check.names = FALSE
     )
   }, striped = TRUE, hover = TRUE, bordered = TRUE, align = "r")
@@ -1108,20 +1158,31 @@ server <- function(input, output, session) {
            " (I = K · Idtr · t^n)")
   })
 
-  # ── Tabla ecuaciones INAMHI de la zona ──────────────────────────────────
-  output$tabla_ecuaciones <- renderTable({
+  # ── Ecuaciones INAMHI de la zona (renderizadas como fórmula LaTeX/MathJax) ─
+  output$tabla_ecuaciones <- renderUI({
     req(rv$resultado)
     zp <- rv$resultado$zona_params
     if (is.null(zp) || nrow(zp) == 0) return(NULL)
-    data.frame(
-      `Duración inicio (min)` = zp$DURACION.INICIO,
-      `Duración fin (min)`    = zp$DURACION.FIN,
-      K                       = round(zp$K,  4),
-      n                       = round(zp$n,  4),
-      `R²`                    = round(zp$R_CUADRADO, 4),
-      check.names = FALSE
-    )
-  }, striped = TRUE, hover = TRUE, bordered = TRUE, align = "r")
+
+    filas <- lapply(seq_len(nrow(zp)), function(i) {
+      fila   <- zp[i, ]
+      cierre <- if (i == nrow(zp)) "≤" else "<"
+      formula_tex <- sprintf(
+        "$$I = %.4f \\cdot Idtr \\cdot t^{%.4f}$$",
+        fila$K, fila$n
+      )
+      div(
+        class = "mb-3",
+        p(class = "small text-muted mb-1",
+          sprintf("Para %.0f min ≤ t %s %.2f min (R² = %.4f):",
+                  fila$DURACION.INICIO, cierre, fila$DURACION.FIN,
+                  fila$R_CUADRADO)),
+        formula_tex
+      )
+    })
+
+    withMathJax(tagList(filas))
+  })
 
   # ── Tabla precipitación total ────────────────────────────────────────────
   output$tabla_precip <- renderTable({
