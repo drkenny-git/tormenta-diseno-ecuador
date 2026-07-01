@@ -896,6 +896,10 @@ server <- function(input, output, session) {
       rv$error_calc <- "Ingresa un valor válido para el paso de tiempo (> 0 minutos)."
       return()
     }
+    if (paso_min >= dur_horas * 60) {
+      rv$error_calc <- "El paso de tiempo debe ser menor que la duración total."
+      return()
+    }
     if (input$metodo == "personalizado") {
       if (is.null(rv$curva_valid) || !rv$curva_valid$valido) {
         rv$error_calc <- "La curva personalizada no es válida o no ha sido cargada."
