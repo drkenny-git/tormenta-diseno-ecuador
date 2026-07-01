@@ -5,11 +5,13 @@
 library(testthat)
 
 # Directorio raíz del proyecto (donde están los scripts y datos)
-test_root <- normalizePath(file.path(dirname(sys.frame(1)$ofile), ".."),
-                           mustWork = FALSE)
-# Si se ejecuta con Rscript directamente:
-if (!exists("test_root") || is.na(test_root) || test_root == "") {
-  test_root <- "/Users/drkenny/Projects/hidrologia/IDF_Ecuador_app"
+# Se resuelve a partir del argumento --file de Rscript (no de sys.frame,
+# que no existe cuando el script corre como programa top-level).
+script_arg <- grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE)
+test_root <- if (length(script_arg) > 0) {
+  normalizePath(file.path(dirname(sub("^--file=", "", script_arg[1])), ".."))
+} else {
+  normalizePath(".")
 }
 
 cat("\n")
