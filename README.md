@@ -19,7 +19,9 @@ Esta app reduce ese trabajo a minutos: elijes una cuenca o un punto de coordenad
 - **Resultados listos para reporte**: ponderación de estaciones, ecuaciones INAMHI en notación matemática, gráficos de hietograma y curva de masa, exportables a PNG y Excel.
 - **Modo guiado / modo experto**: la misma herramienta sirve para quien está aprendiendo el método y para quien solo necesita el número rápido.
 
-![Resultado: tabla de precipitación, hietogramas y curvas de masa](docs/screenshots/02_hietogramas_resultado.png)
+![Resultado: ponderaciónd e estaciones, Idtr ponderado y ecuaciones de la zona](docs/screenshots/02_tablas_resultado.png)
+
+![Resultado: hietogramas y curvas de masa](docs/screenshots/03_hietogramas_resultado.png)
 
 ## Stack técnico
 
