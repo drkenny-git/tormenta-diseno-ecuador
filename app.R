@@ -613,7 +613,8 @@ server <- function(input, output, session) {
         label       = "Cuenca de estudio",
         options     = pathOptions(pane = "cuenca_pane")
       ) |>
-      fitBounds(bb["xmin"], bb["ymin"], bb["xmax"], bb["ymax"])
+      fitBounds(unname(bb["xmin"]), unname(bb["ymin"]),
+                unname(bb["xmax"]), unname(bb["ymax"]))
   })
 
   # ── Punto de referencia: sugerencias de zona y estaciones ───────────────
