@@ -2,7 +2,7 @@
 
 **Generador de hietogramas de diseño con las curvas IDF oficiales del INAMHI, con cobertura de las 72 zonas de intensidad del país.**
 
-🔗 **Demo en vivo:** próximamente (en proceso de despliegue)
+🔗 **Demo en vivo:** [drkenny-shiny.shinyapps.io/hietogramas-ecuador](https://drkenny-shiny.shinyapps.io/hietogramas-ecuador/)
 
 Antes de esta herramienta, armar un hietograma de diseño en Ecuador significaba abrir el PDF del estudio de lluvias intensas del INAMHI, ubicar a mano la zona y la estación de referencia, transcribir los coeficientes K y n a una hoja de Excel armada por el propio ingeniero, y repetir el proceso para cada período de retorno y cada método por separado. Un trabajo propenso a errores de transcripción, difícil de auditar, y que tomaba horas para un solo punto de diseño.
 
