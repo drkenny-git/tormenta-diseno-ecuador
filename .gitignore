@@ -15,6 +15,10 @@ tormenta-diseno-ecuador-113bba061921.json
 output/
 data_usuario/
 
+# Datos INAMHI y documentación interna (privados, no al repo público)
+data_sistema/
+CLAUDE.md
+
 # OS
 .DS_Store
 Thumbs.db
