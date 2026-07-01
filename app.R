@@ -361,8 +361,8 @@ ui <- page_sidebar(
             ),
             tags$li(
               icon("github"), " ",
-              tags$a("github.com/drkenny-git/nombre-por-actualizar",
-                     href   = "https://github.com/drkenny-git/nombre-por-actualizar",
+              tags$a("github.com/drkenny-git/tormenta-diseno-ecuador",
+                     href   = "https://github.com/drkenny-git/tormenta-diseno-ecuador",
                      target = "_blank", rel = "noopener"),
               " (reporta un issue)"
             )
